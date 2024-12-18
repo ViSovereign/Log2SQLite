@@ -8,12 +8,12 @@ use std::path::{Path, PathBuf};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Parse command-line arguments
     let matches = Command::new("Log to SQLite")
-        .version("1.2")
-        .author("Your Name <your.email@example.com>")
+        .version("1.0")
+        .author("Brandon Leflar <Brandon.Leflar@Transcore.com>")
         .about("Parses log files in a directory, matches lines with a regex, and inserts results into an SQLite database")
         .arg(
             Arg::new("log_dir")
-                .help("Path to the directory containing log files")
+                .help("The directory containing log files")
                 .required(true)
                 .index(1),
         )
@@ -46,19 +46,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let regex = Regex::new(regex_pattern)?;
 
     // Extract named groups from the regex
-    let column_names: Vec<_> = regex
+    let mut column_names: Vec<_> = regex
         .capture_names()
         .flatten()
         .map(|name| name.to_string())
         .collect();
 
-    if column_names.is_empty() {
-        eprintln!("The provided regex does not contain named groups.");
-        return Err("No named groups in regex".into());
-    }
+    column_names.push("filename".to_string()); // Add the filename column
 
     // Connect to SQLite database
-    let mut conn = Connection::open(db_path)?; // Mutable connection
+    let mut conn = Connection::open(db_path)?;
     let create_table_query = format!(
         "CREATE TABLE IF NOT EXISTS log_data ({})",
         column_names
@@ -68,17 +65,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .join(", ")
     );
     conn.execute(&create_table_query, [])?;
-    println!("Database table created or verified.");
+    println!("Database table verified.");
 
-    // Find matching files in the directory
+    // Find matching files
     let log_files = find_matching_files(log_dir, file_filter)?;
     if log_files.is_empty() {
         println!("No files matching the filter '{}' were found in '{}'.", file_filter, log_dir);
         return Ok(());
-    }    
+    }
+    println!("Found {} matching files.", log_files.len());
 
     let mut total_matches = 0;
-    
+
     // Sequentially process each file
     for (index, file_path) in log_files.iter().enumerate() {
         println!(
@@ -87,9 +85,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             log_files.len(),
             file_path
         );
-        total_matches += process_file(file_path, &mut conn, &regex, &column_names)?; // Pass mutable reference
+        total_matches += process_file(file_path, &mut conn, &regex, &column_names)?;
     }
-    
+
     println!("Log processing completed. Total matches found: {}", total_matches);
     Ok(())
 }
@@ -97,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// Process a single file and insert matches into the database.
 fn process_file(
     file_path: &Path,
-    conn: &mut Connection, // Mutable reference
+    conn: &mut Connection,
     regex: &Regex,
     column_names: &[String],
 ) -> Result<usize, Box<dyn std::error::Error>> {
@@ -105,7 +103,7 @@ fn process_file(
     let reader = io::BufReader::new(file);
     let mut match_count = 0;
 
-    let tx = conn.transaction()?; // Mutable connection for transaction
+    let tx = conn.transaction()?; // Start a transaction
 
     let placeholders = column_names.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let insert_query = format!(
@@ -114,15 +112,21 @@ fn process_file(
         placeholders
     );
 
+    let filename = file_path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
     for line in reader.lines() {
         let line = line?;
         if let Some(captures) = regex.captures(&line) {
             match_count += 1;
 
-            let values: Vec<String> = column_names
+            // Collect named group values
+            let mut values: Vec<String> = column_names
                 .iter()
+                .filter(|name| *name != "filename")
                 .map(|name| captures.name(name).map(|m| m.as_str().to_string()).unwrap_or_default())
                 .collect();
+
+            values.push(filename.clone()); // Add the filename value
 
             let params: Vec<&dyn ToSql> = values.iter().map(|v| v as &dyn ToSql).collect();
             tx.execute(&insert_query, rusqlite::params_from_iter(params))?;
@@ -133,7 +137,6 @@ fn process_file(
     println!("Processed file {:?}, Matches: {}", file_path, match_count);
     Ok(match_count)
 }
-
 
 /// Finds all files in the given directory containing the specified substring in their names.
 fn find_matching_files(dir: &str, filter: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {

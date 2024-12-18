@@ -1,10 +1,9 @@
 [package]
 name = "Log2SQLite"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
 
 [dependencies]
 clap = "4.1.6"        # For parsing command-line arguments
-regex = "1.7.1"       # For regex matching
+regex = "1.7.1"
 rusqlite = { version = "0.32.1", features = ["bundled"] }
-rayon = "1.7.0"
