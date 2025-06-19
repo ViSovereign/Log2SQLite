@@ -4,11 +4,12 @@ use rusqlite::{Connection, ToSql};
 use std::fs::{self, File};
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
+use std::error::Error;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<(), Box<dyn Error>> {
     // Parse command-line arguments
     let matches = Command::new("Log to SQLite")
-        .version("1.0")
+        .version("1.1")
         .author("Brandon Leflar <Brandon.Leflar@Transcore.com>")
         .about("Parses log files in a directory, matches lines with a regex, and inserts results into an SQLite database")
         .arg(
@@ -31,9 +32,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .arg(
             Arg::new("regex")
-                .help("Regular expression with named groups")
+                .help("Regular expression with named groups. 'filename' is used by this program")
                 .required(true)
                 .index(4),
+        )
+        .arg(
+            Arg::new("primary_key")
+                .help("The collumn in the table to make a primary key")
+                .required(true)
+                .index(5),
         )
         .get_matches();
 
@@ -41,6 +48,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file_filter = matches.get_one::<String>("file_filter").unwrap();
     let db_path = matches.get_one::<String>("db_path").unwrap();
     let regex_pattern = matches.get_one::<String>("regex").unwrap();
+    let primary_key = matches.get_one::<String>("primary_key").unwrap();
 
     // Compile the regex
     let regex = Regex::new(regex_pattern)?;
@@ -52,20 +60,37 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|name| name.to_string())
         .collect();
 
-    column_names.push("filename".to_string()); // Add the filename column
+    // Make sure 'filename' is not in the column_names vec
+     if column_names.contains(&"filename".to_string()) {
+        return Err(format!("The program will use 'filename' to add the log's file name from the regex match. Please use a different group name in the regex.").into());
+    }
+
+    // Add the filename column
+    column_names.push("filename".to_string());
+
+    // Make sure the primary_key is in column_names
+    if !column_names.contains(&primary_key) || primary_key ==  &"filename".to_string(){
+        return Err(format!("The provided primary_key '{}' needs to be a group name in the regex ({}) and not 'filename'.", primary_key, column_names.join(", ")).into());
+    }
 
     // Connect to SQLite database
     let mut conn = Connection::open(db_path)?;
     let create_table_query = format!(
-        "CREATE TABLE IF NOT EXISTS log_data ({})",
+        "CREATE TABLE IF NOT EXISTS log_data ({}, PRIMARY KEY(\"{}\"))",
         column_names
             .iter()
             .map(|name| format!("{} TEXT", name))
             .collect::<Vec<_>>()
-            .join(", ")
+            .join(", "),
+        primary_key
     );
     conn.execute(&create_table_query, [])?;
     println!("Database table verified.");
+
+    // Error out if the log path does not exist
+    if !Path::new(log_dir).exists(){
+        return Err(format!("The provided log_dir '{}' is not a valid directory.", log_dir).into());
+    };
 
     // Find matching files
     let log_files = find_matching_files(log_dir, file_filter)?;
@@ -92,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Process a single file and insert matches into the database.
+// Process a single file and insert matches into the database.
 fn process_file(
     file_path: &Path,
     conn: &mut Connection,
@@ -138,7 +163,7 @@ fn process_file(
     Ok(match_count)
 }
 
-/// Finds all files in the given directory containing the specified substring in their names.
+// Finds all files in the given directory containing the specified substring in their names.
 fn find_matching_files(dir: &str, filter: &str) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut matching_files = Vec::new();
 
